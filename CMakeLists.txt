@@ -55,7 +55,11 @@ target_link_libraries(h264_analyze PRIVATE compile_options h264bitstream)
 add_executable(svc_split svc_split.c)
 target_link_libraries(svc_split PRIVATE compile_options h264bitstream)
 
-install(TARGETS h264bitstream h264_analyze svc_split
+# Add the new dependency analyzer executable
+add_executable(dep_analyzer dep_analyzer_main.c dep_analyzer.c)
+target_link_libraries(dep_analyzer PRIVATE compile_options h264bitstream)
+
+install(TARGETS h264bitstream h264_analyze svc_split dep_analyzer
 	FILE_SET headers
 )
 
