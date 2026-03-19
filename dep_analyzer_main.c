@@ -2,8 +2,6 @@
 #include <stdlib.h>
 #include "dep_analyzer.h"
 
-#define BUF_SIZE 1024 * 1024 // 1MB buffer for reading file
-
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         fprintf(stderr, "Usage: %s <input.h264>\n", argv[0]);
@@ -37,7 +35,7 @@ int main(int argc, char *argv[]) {
     }
     fclose(f);
 
-    printf("Analyzing file: %s (%ld bytes)\n", filename, file_size);
+    printf("Analyzing file: %s (%ld bytes)\n\n", filename, file_size);
 
     DepdenceAnalysis* da = depdence_analysis_new();
     if (!da) {
@@ -46,21 +44,24 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // --- Pass 1: Information Gathering ---
+    printf("--- Pass 1: Analyzing NAL units in decode order ---\n");
     int nal_start, nal_end;
     uint8_t* buf = file_buffer;
     long size = file_size;
-
     while (find_nal_unit(buf, size, &nal_start, &nal_end) > 0) {
-        // Pass the found NAL unit to the analyzer
-        // Note: We pass the pointer to the start of the NAL unit and its size
         depdence_analysis_process_nal(da, buf + nal_start, nal_end - nal_start);
-
-        // Move buffer pointer and size to the next search position
         buf += nal_end;
         size -= nal_end;
     }
+    printf("Found %d frames.\n\n", da->frame_count);
 
-    // Cleanup
+    // --- Pass 2: Reporting in Display Order ---
+    printf("--- Pass 2: Reporting dependencies in display order ---\n");
+    depdence_analysis_report_results(da);
+    printf("\n");
+
+    // --- Cleanup ---
     depdence_analysis_free(da);
     free(file_buffer);
 

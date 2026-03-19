@@ -4,35 +4,64 @@
 #include "h264_stream.h"
 #include <stdint.h>
 
-#define MAX_REF_FRAMES 16 // Maximum number of reference frames we'll track in our DPB
+#define MAX_DEPS 32       // Max dependencies a single frame can have
+#define MAX_REF_FRAMES 16 // Max reference frames in our simulated DPB
 
-// A structure to hold comprehensive info about a reference picture in the DPB
-// This will be our mapping between a frame's actual frame_num and its unique decode_id
+// This structure holds all information we gather about a single frame during the first pass.
 typedef struct {
-    int frame_num;      // The actual frame_num from the slice header (can wrap around)
-    int decode_id;      // The unique, monotonically increasing ID we assign to each frame
+    int decode_id;          // Unique ID assigned in decode order (0, 1, 2...)
+    int poc;                // Picture Order Count (local to GOP)
+    int global_poc;         // Global POC used for sorting across the whole video
+    char frame_type;        // 'I', 'P', 'B'
+    int is_idr;             // Flag if it's an IDR frame
+    int is_ref;             // Flag if it's a reference frame (nal_ref_idc != 0)
+
+    // Copied from slice header/PPS to isolate from parsing side-effects
+    int frame_num;
+    int poc_lsb;
+    int num_ref_idx_l0;
+    int num_ref_idx_l1;
+
+    int dependencies[MAX_DEPS]; // List of dependencies, stored as DECODE_IDs.
+    int dep_count;
+} FrameInfo;
+
+// This structure holds info about a picture in the Decoded Picture Buffer (DPB).
+typedef struct {
+    int frame_num;
+    int decode_id;
+    int poc;                // Needed for B-frame ref list construction rules
 } RefPicInfo;
 
-// "Class" representing the dependency analyzer
+// The main analyzer "class" managing the state.
 typedef struct {
     h264_stream_t* h;
 
-    // --- State Management for Dependency Tracking ---
-    RefPicInfo dpb[MAX_REF_FRAMES]; // Our simplified Decoded Picture Buffer, now storing more info
-    int dpb_size;                   // Current number of pictures in the DPB
+    // --- Pass 1: Information Gathering & State ---
+    FrameInfo** frames;         // A dynamic array to log info for every frame.
+    int frame_count;            // Number of frames logged so far.
+    int frame_capacity;         // Allocated capacity of the frames array.
 
-    // --- State for correct processing and display ---
-    int decode_id_counter;          // A monotonically increasing frame number for user-friendly display
+    // Internal state for Pass 1
+    int decode_id_counter;
+    RefPicInfo dpb[MAX_REF_FRAMES]; // The simulated Decoded Picture Buffer.
+    int dpb_size;
+
+    // POC calculation state
+    int prev_poc_lsb;
+    int prev_poc_msb;
+    int max_poc_lsb;
+
+    int global_poc_offset;      // Used to make POC monotonically increasing across IDRs
+    int max_poc_in_gop;
 
 } DepdenceAnalysis;
 
-// Constructor
+
+// --- Public API ---
 DepdenceAnalysis* depdence_analysis_new();
-
-// Destructor
 void depdence_analysis_free(DepdenceAnalysis* da);
-
-// Method to process a single NAL unit and print dependency info
 void depdence_analysis_process_nal(DepdenceAnalysis* da, uint8_t* nal_buf, int nal_size);
+void depdence_analysis_report_results(DepdenceAnalysis* da);
 
 #endif //DEP_ANALYZER_H
