@@ -3,14 +3,17 @@ cmake_minimum_required(VERSION 3.23)
 SET(CMAKE_C_STANDARD 99)
 
 project(h264bitstream
-	VERSION 0.2.0
-	DESCRIPTION "A complete set of functions to read and write H.264 video bitstreams, in particular to examine or modify headers."
-	HOMEPAGE_URL https://github.com/aizvorski/h264bitstream
-	LANGUAGES C
+        VERSION 0.2.0
+        DESCRIPTION "A complete set of functions to read and write H.264 video bitstreams, in particular to examine or modify headers."
+        HOMEPAGE_URL https://github.com/aizvorski/h264bitstream
+        LANGUAGES C CXX
 )
 
 include(GNUInstallDirs)
 
+# Find wxWidgets
+find_package(wxWidgets REQUIRED COMPONENTS core base)
+include(${wxWidgets_USE_FILE})
 # Adding interface target for compiler flags
 add_library(compile_options INTERFACE)
 target_compile_options(compile_options INTERFACE -Wall -pedantic $<IF:$<CONFIG:Debug>,-O0,-O2>)
@@ -24,18 +27,19 @@ endif()
 
 # Library sources
 set(SOURCES
-	h264_nal.c
-	h264_sei.c
-	h264_stream.c
+        h264_nal.c
+        h264_sei.c
+        h264_stream.c
+        h264_analyzer.c
 )
 
 set(HEADERS
-	bs.h
-	h264_avcc.h
-	h264_sei.h
-	h264_stream.h
+        bs.h
+        h264_avcc.h
+        h264_sei.h
+        h264_stream.h
+        h264_analyzer.h
 )
-
 # These do not participate in build -- for now...
 set(ADDITIONALS
 	h264_avcc.c
@@ -51,6 +55,9 @@ target_link_libraries(h264bitstream PRIVATE compile_options)
 
 add_executable(h264_analyze h264_analyze.c)
 target_link_libraries(h264_analyze PRIVATE compile_options h264bitstream)
+
+add_executable(h264_analyze_gui MACOSX_BUNDLE h264_gui.cpp)
+target_link_libraries(h264_analyze_gui PRIVATE compile_options h264bitstream ${wxWidgets_LIBRARIES})
 
 add_executable(svc_split svc_split.c)
 target_link_libraries(svc_split PRIVATE compile_options h264bitstream)
