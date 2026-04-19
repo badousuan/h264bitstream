@@ -11,14 +11,46 @@ project(h264bitstream
 
 include(GNUInstallDirs)
 
-# Find wxWidgets
-find_package(wxWidgets REQUIRED COMPONENTS core base)
-include(${wxWidgets_USE_FILE})
+# Manually configure wxWidgets
+if(WIN32)
+    set(wxWidgets_FOUND TRUE)
+    set(wx_include_dir "C:/Users/7/Desktop/h264bitstream/wxWidgets/include")
+    set(wx_path_debug "C:/Users/7/Desktop/h264bitstream/wxWidgets/wxMSW-3.3.2_vc14x_x64_DebugDLL/lib/vc14x_x64_dll")
+    set(wx_path_release "C:/Users/7/Desktop/h264bitstream/wxWidgets/wxMSW-3.3.2_vc14x_x64_ReleaseDLL/lib/vc14x_x64_dll")
+
+    # Build library list with explicit debug/optimized keywords
+    set(wxWidgets_LIBRARIES
+        # Core & Base
+        optimized "${wx_path_release}/wxmsw33u_core.lib" debug "${wx_path_debug}/wxmsw33ud_core.lib"
+        optimized "${wx_path_release}/wxbase33u.lib"     debug "${wx_path_debug}/wxbase33ud.lib"
+        # 3rd party libs
+        optimized "${wx_path_release}/wxpng.lib"         debug "${wx_path_debug}/wxpngd.lib"
+        optimized "${wx_path_release}/wxzlib.lib"        debug "${wx_path_debug}/wxzlibd.lib"
+        optimized "${wx_path_release}/wxjpeg.lib"        debug "${wx_path_debug}/wxjpegd.lib"
+        optimized "${wx_path_release}/wxtiff.lib"        debug "${wx_path_debug}/wxtiffd.lib"
+        # System libs
+        comctl32.lib rpcrt4.lib shlwapi.lib version.lib ws2_32.lib
+    )
+
+    # Inclusion paths for both configs
+    set(wx_inc_release "${wx_path_release}/mswu")
+    set(wx_inc_debug   "${wx_path_debug}/mswud")
+
+    add_definitions(-DwxMSVC_VERSION_AUTO -D__WXMSW__ -DwxUSE_GUI=1 -DUNICODE -D_UNICODE)
+else()
+    find_package(wxWidgets COMPONENTS core base)
+endif()
+
 # Adding interface target for compiler flags
 add_library(compile_options INTERFACE)
-target_compile_options(compile_options INTERFACE -Wall -pedantic $<IF:$<CONFIG:Debug>,-O0,-O2>)
-if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-	target_compile_options(compile_options INTERFACE -Wextra -Wshadow -Wwrite-strings -Wno-unused -g)
+if(MSVC)
+    target_compile_options(compile_options INTERFACE /W4 /wd4201)
+    target_compile_definitions(compile_options INTERFACE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_compile_options(compile_options INTERFACE -Wall -pedantic $<IF:$<CONFIG:Debug>,-O0,-O2>)
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(compile_options INTERFACE -Wextra -Wshadow -Wwrite-strings -Wno-unused -g)
+    endif()
 endif()
 if(APPLE)
 	# Compiler flags for creating universal (fat) binaries.
@@ -56,8 +88,16 @@ target_link_libraries(h264bitstream PRIVATE compile_options)
 add_executable(h264_analyze h264_analyze.c)
 target_link_libraries(h264_analyze PRIVATE compile_options h264bitstream)
 
-add_executable(h264_analyze_gui MACOSX_BUNDLE h264_gui.cpp)
-target_link_libraries(h264_analyze_gui PRIVATE compile_options h264bitstream ${wxWidgets_LIBRARIES})
+if(wxWidgets_FOUND)
+    add_executable(h264_analyze_gui WIN32 MACOSX_BUNDLE h264_gui.cpp)
+    if(WIN32)
+        target_include_directories(h264_analyze_gui PRIVATE ${wx_include_dir} ${wx_inc_release} ${wx_inc_debug})
+    else()
+        target_include_directories(h264_analyze_gui PRIVATE ${wxWidgets_INCLUDE_DIRS})
+    endif()
+    target_link_libraries(h264_analyze_gui PRIVATE compile_options h264bitstream ${wxWidgets_LIBRARIES})
+    target_compile_definitions(h264_analyze_gui PRIVATE WXUSINGDLL)
+endif()
 
 add_executable(svc_split svc_split.c)
 target_link_libraries(svc_split PRIVATE compile_options h264bitstream)

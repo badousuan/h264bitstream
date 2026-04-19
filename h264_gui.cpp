@@ -199,27 +199,88 @@ void H264AnalyzerFrame::AnalyzeFile(const wxString& filename) {
     SetStatusText(wxString::Format("Found %zu NAL units", m_nals.size()));
 }
 
+#if defined(_WIN32) && !defined(HAVE_OPEN_MEMSTREAM)
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+
+// Simple replacement for open_memstream on Windows
+FILE* open_memstream(char** ptr, size_t* sizeloc) {
+    if (!ptr || !sizeloc) return NULL;
+
+    char temp_path[MAX_PATH];
+    char temp_file[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, temp_path) == 0) return NULL;
+    if (GetTempFileNameA(temp_path, "h264", 0, temp_file) == 0) return NULL;
+
+    FILE* f = fopen(temp_file, "w+b");
+    if (!f) return NULL;
+
+    // We need a way to retrieve the buffer and its size later.
+    // A simple approach is to store the temp file name and read it on fclose.
+    // This is a simplified and somewhat hacky implementation.
+    // The caller is responsible for reading the file and deleting it.
+    *ptr = _strdup(temp_file); // Store the temp file name in *ptr
+    *sizeloc = 0; // Not used in this implementation to store the size directly
+
+    return f;
+}
+
+void close_memstream(FILE* f, char** ptr, size_t* sizeloc) {
+    if (!f || !ptr || !*ptr || !sizeloc) return;
+
+    fflush(f);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char* buf = (char*)malloc(size + 1);
+    if (buf) {
+        size_t readSize = fread(buf, 1, size, f);
+        buf[readSize] = '\0';
+        *sizeloc = readSize;
+    }
+
+    fclose(f);
+    DeleteFileA(*ptr); // Delete the temp file
+    free(*ptr); // Free the stored filename
+    *ptr = buf; // Return the buffer
+}
+
+#define USE_CUSTOM_MEMSTREAM 1
+#endif
+
 void H264AnalyzerFrame::OnNalSelected(wxListEvent& event) {
     long index = event.GetIndex();
     if (index < 0 || index >= (long)m_nals.size()) return;
 
     const NalInfo& nal = m_nals[index];
 
-    // Redirect h264_dbgfile to a memory buffer
     char* memBuf = nullptr;
     size_t memSize = 0;
-    FILE* memFile = open_memstream(&memBuf, &memSize);
+    FILE* memFile = nullptr;
+
+#ifdef USE_CUSTOM_MEMSTREAM
+    memFile = open_memstream(&memBuf, &memSize);
+#else
+    memFile = open_memstream(&memBuf, &memSize);
+#endif
     
     if (memFile) {
+        FILE* old_dbgfile = h264_dbgfile;
         h264_dbgfile = memFile;
-        // Need to parse the NAL unit
-        // We use a temporary h264_stream_t to avoid messing up global state if any
+
         h264_stream_t* h = h264_new();
         read_debug_nal_unit(h, const_cast<uint8_t*>(nal.data.data()), nal.size);
         h264_free(h);
         
+#ifdef USE_CUSTOM_MEMSTREAM
+        close_memstream(memFile, &memBuf, &memSize);
+#else
+        fflush(memFile);
         fclose(memFile);
-        h264_dbgfile = stdout;
+#endif
+
+        h264_dbgfile = old_dbgfile;
 
         if (memBuf) {
             m_detailsText->SetValue(wxString::FromUTF8(memBuf));
