@@ -94,7 +94,19 @@ if(wxWidgets_FOUND)
         target_include_directories(h264_analyze_gui PRIVATE ${wx_include_dir} ${wx_inc_release} ${wx_inc_debug})
     else()
         target_include_directories(h264_analyze_gui PRIVATE ${wxWidgets_INCLUDE_DIRS})
+        target_compile_definitions(h264_analyze_gui PRIVATE ${wxWidgets_DEFINITIONS})
     endif()
+    # On macOS, ensure we build a bundle if needed, or just a normal executable
+	if(APPLE)
+    	set_target_properties(h264_analyze_gui PROPERTIES 
+        	MACOSX_BUNDLE TRUE
+        	MACOSX_DEPLOYMENT_TARGET "12.0"
+       		MACOSX_BUNDLE_GUI_IDENTIFIER "com.virinext.h264_analyze_gui"
+        	MACOSX_BUNDLE_BUNDLE_NAME "HEVCESBrowser"
+        	MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
+        	MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0"
+    	)
+	endif()
     target_link_libraries(h264_analyze_gui PRIVATE compile_options h264bitstream ${wxWidgets_LIBRARIES})
     target_compile_definitions(h264_analyze_gui PRIVATE WXUSINGDLL)
 endif()

@@ -1,6 +1,8 @@
 #include <wx/wx.h>
 #include <wx/listctrl.h>
 #include <wx/splitter.h>
+#include <wx/textfile.h>
+#include <wx/progdlg.h>
 #include <wx/dnd.h>
 #include <vector>
 #include <string>
@@ -34,11 +36,13 @@ public:
 
 private:
     void OnOpenFile(wxCommandEvent& event);
+    void OnSaveDetails(wxCommandEvent& event);
     void OnExit(wxCommandEvent& event);
     void OnAbout(wxCommandEvent& event);
     void OnNalSelected(wxListEvent& event);
 
     std::string GetNalTypeName(int type);
+    wxString CaptureNalDetails(const NalInfo& nal);
 
     wxListCtrl* m_nalList;
     wxTextCtrl* m_detailsText;
@@ -49,7 +53,8 @@ private:
 };
 
 enum {
-    ID_OpenFile = 1
+    ID_OpenFile = 1,
+    ID_SaveDetails = 2
 };
 
 bool FileDropTarget::OnDropFiles(wxCoord x, wxCoord y, const wxArrayString& filenames) {
@@ -62,6 +67,9 @@ bool FileDropTarget::OnDropFiles(wxCoord x, wxCoord y, const wxArrayString& file
 
 wxBEGIN_EVENT_TABLE(H264AnalyzerFrame, wxFrame)
     EVT_MENU(ID_OpenFile, H264AnalyzerFrame::OnOpenFile)
+    EVT_MENU(ID_SaveDetails, H264AnalyzerFrame::OnSaveDetails)
+    EVT_BUTTON(ID_OpenFile, H264AnalyzerFrame::OnOpenFile)
+    EVT_BUTTON(ID_SaveDetails, H264AnalyzerFrame::OnSaveDetails)
     EVT_MENU(wxID_EXIT, H264AnalyzerFrame::OnExit)
     EVT_MENU(wxID_ABOUT, H264AnalyzerFrame::OnAbout)
     EVT_LIST_ITEM_SELECTED(wxID_ANY, H264AnalyzerFrame::OnNalSelected)
@@ -87,6 +95,7 @@ H264AnalyzerFrame::H264AnalyzerFrame(const wxString& title)
 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(ID_OpenFile, "&Open...\tCtrl-O", "Open an H.264 bitstream file");
+    menuFile->Append(ID_SaveDetails, "&Save Details...\tCtrl-S", "Save the detailed NAL information to a file");
     menuFile->AppendSeparator();
     menuFile->Append(wxID_EXIT);
 
@@ -97,6 +106,17 @@ H264AnalyzerFrame::H264AnalyzerFrame(const wxString& title)
     menuBar->Append(menuFile, "&File");
     menuBar->Append(menuHelp, "&Help");
     SetMenuBar(menuBar);
+
+    // Create a top panel for buttons to ensure visibility (avoiding native toolbar quirks)
+    wxPanel* buttonPanel = new wxPanel(this, wxID_ANY);
+    wxBoxSizer* buttonSizer = new wxBoxSizer(wxHORIZONTAL);
+
+    wxButton* openBtn = new wxButton(buttonPanel, ID_OpenFile, "Open File");
+    wxButton* saveBtn = new wxButton(buttonPanel, ID_SaveDetails, "Save Details");
+
+    buttonSizer->Add(openBtn, 0, wxALL, 5);
+    buttonSizer->Add(saveBtn, 0, wxALL, 5);
+    buttonPanel->SetSizer(buttonSizer);
 
     CreateStatusBar();
     SetStatusText("Welcome to H.264 Analyzer!");
@@ -116,6 +136,12 @@ H264AnalyzerFrame::H264AnalyzerFrame(const wxString& title)
 
     splitter->SplitVertically(m_nalList, m_detailsText, 420);
     splitter->SetMinimumPaneSize(100);
+
+    // Use a vertical sizer for the frame to arrange button panel and splitter
+    wxBoxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
+    mainSizer->Add(buttonPanel, 0, wxEXPAND);
+    mainSizer->Add(splitter, 1, wxEXPAND);
+    SetSizer(mainSizer);
 }
 
 void H264AnalyzerFrame::OnExit(wxCommandEvent& event) {
@@ -136,6 +162,52 @@ void H264AnalyzerFrame::OnOpenFile(wxCommandEvent& event) {
         return;
 
     AnalyzeFile(openFileDialog.GetPath());
+}
+
+void H264AnalyzerFrame::OnSaveDetails(wxCommandEvent& event) {
+    if (m_nals.empty()) {
+        if (m_detailsText->IsEmpty()) {
+            wxMessageBox("Nothing to save!", "Warning", wxOK | wxICON_WARNING);
+        } else {
+            // Fallback to saving current view if m_nals is somehow empty but text is not
+            wxFileDialog saveFileDialog(this, _("Save current details"), "", "details.txt",
+                                       "Text files (*.txt)|*.txt|All files (*.*)|*.*", 
+                                       wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+            if (saveFileDialog.ShowModal() != wxID_CANCEL) {
+                m_detailsText->SaveFile(saveFileDialog.GetPath());
+            }
+        }
+        return;
+    }
+
+    wxFileDialog saveFileDialog(this, _("Save all NAL details"), "", "details.txt",
+                               "Text files (*.txt)|*.txt|All files (*.*)|*.*", 
+                               wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+
+    if (saveFileDialog.ShowModal() == wxID_CANCEL)
+        return;
+
+    wxString filename = saveFileDialog.GetPath();
+    wxProgressDialog progress("Saving Details", "Processing NAL units...", m_nals.size(), this, wxPD_APP_MODAL | wxPD_AUTO_HIDE);
+
+    wxTextFile file;
+    if (!file.Create(filename) && !file.Open(filename)) {
+        wxMessageBox("Could not create or open file.", "Error", wxOK | wxICON_ERROR);
+        return;
+    }
+
+    file.Clear();
+    for (size_t i = 0; i < m_nals.size(); ++i) {
+        file.AddLine(CaptureNalDetails(m_nals[i]));
+        progress.Update(i + 1);
+    }
+
+    if (file.Write()) {
+        SetStatusText("All NAL details saved successfully.");
+    } else {
+        wxMessageBox("Error writing to file.", "Error", wxOK | wxICON_ERROR);
+    }
+    file.Close();
 }
 
 std::string H264AnalyzerFrame::GetNalTypeName(int type) {
@@ -249,12 +321,7 @@ void close_memstream(FILE* f, char** ptr, size_t* sizeloc) {
 #define USE_CUSTOM_MEMSTREAM 1
 #endif
 
-void H264AnalyzerFrame::OnNalSelected(wxListEvent& event) {
-    long index = event.GetIndex();
-    if (index < 0 || index >= (long)m_nals.size()) return;
-
-    const NalInfo& nal = m_nals[index];
-
+wxString H264AnalyzerFrame::CaptureNalDetails(const NalInfo& nal) {
     char* memBuf = nullptr;
     size_t memSize = 0;
     FILE* memFile = nullptr;
@@ -268,6 +335,10 @@ void H264AnalyzerFrame::OnNalSelected(wxListEvent& event) {
     if (memFile) {
         FILE* old_dbgfile = h264_dbgfile;
         h264_dbgfile = memFile;
+
+        fprintf(h264_dbgfile, "!! Found NAL at offset %lld (0x%04llX), size %lld (0x%04llX) \n",
+                (long long int)nal.offset, (long long int)nal.offset,
+                (long long int)nal.size, (long long int)nal.size);
 
         h264_stream_t* h = h264_new();
         read_debug_nal_unit(h, const_cast<uint8_t*>(nal.data.data()), nal.size);
@@ -283,10 +354,17 @@ void H264AnalyzerFrame::OnNalSelected(wxListEvent& event) {
         h264_dbgfile = old_dbgfile;
 
         if (memBuf) {
-            m_detailsText->SetValue(wxString::FromUTF8(memBuf));
+            wxString details = wxString::FromUTF8(memBuf);
             free(memBuf);
+            return details;
         }
-    } else {
-        m_detailsText->SetValue("Error capturing details");
     }
+    return "Error capturing details";
+}
+
+void H264AnalyzerFrame::OnNalSelected(wxListEvent& event) {
+    long index = event.GetIndex();
+    if (index < 0 || index >= (long)m_nals.size()) return;
+
+    m_detailsText->SetValue(CaptureNalDetails(m_nals[index]));
 }
