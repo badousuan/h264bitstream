@@ -4,6 +4,8 @@
 #include <wx/textfile.h>
 #include <wx/progdlg.h>
 #include <wx/dnd.h>
+#include <wx/filename.h>
+#include <wx/file.h>
 #include <vector>
 #include <string>
 #include "h264_stream.h"
@@ -33,10 +35,12 @@ class H264AnalyzerFrame : public wxFrame {
 public:
     H264AnalyzerFrame(const wxString& title);
     void AnalyzeFile(const wxString& filename);
+    void DoAnalyzeFile(const wxString& filename);
 
 private:
     void OnOpenFile(wxCommandEvent& event);
     void OnSaveDetails(wxCommandEvent& event);
+    void OnSetFfmpegPath(wxCommandEvent& event);
     void OnExit(wxCommandEvent& event);
     void OnAbout(wxCommandEvent& event);
     void OnNalSelected(wxListEvent& event);
@@ -48,13 +52,15 @@ private:
     wxTextCtrl* m_detailsText;
     std::vector<NalInfo> m_nals;
     h264_stream_t* m_h264;
+    wxString m_ffmpegPath;
 
     wxDECLARE_EVENT_TABLE();
 };
 
 enum {
     ID_OpenFile = 1,
-    ID_SaveDetails = 2
+    ID_SaveDetails = 2,
+    ID_SetFfmpeg = 3
 };
 
 bool FileDropTarget::OnDropFiles(wxCoord x, wxCoord y, const wxArrayString& filenames) {
@@ -68,8 +74,10 @@ bool FileDropTarget::OnDropFiles(wxCoord x, wxCoord y, const wxArrayString& file
 wxBEGIN_EVENT_TABLE(H264AnalyzerFrame, wxFrame)
     EVT_MENU(ID_OpenFile, H264AnalyzerFrame::OnOpenFile)
     EVT_MENU(ID_SaveDetails, H264AnalyzerFrame::OnSaveDetails)
+    EVT_MENU(ID_SetFfmpeg, H264AnalyzerFrame::OnSetFfmpegPath)
     EVT_BUTTON(ID_OpenFile, H264AnalyzerFrame::OnOpenFile)
     EVT_BUTTON(ID_SaveDetails, H264AnalyzerFrame::OnSaveDetails)
+    EVT_BUTTON(ID_SetFfmpeg, H264AnalyzerFrame::OnSetFfmpegPath)
     EVT_MENU(wxID_EXIT, H264AnalyzerFrame::OnExit)
     EVT_MENU(wxID_ABOUT, H264AnalyzerFrame::OnAbout)
     EVT_LIST_ITEM_SELECTED(wxID_ANY, H264AnalyzerFrame::OnNalSelected)
@@ -90,12 +98,14 @@ H264AnalyzerFrame::H264AnalyzerFrame(const wxString& title)
     : wxFrame(NULL, wxID_ANY, title, wxDefaultPosition, wxSize(1000, 700)) {
     
     m_h264 = h264_new();
+    m_ffmpegPath = "/usr/local/bin/ffmpeg"; // Default
 
     SetDropTarget(new FileDropTarget(this));
 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(ID_OpenFile, "&Open...\tCtrl-O", "Open an H.264 bitstream file");
     menuFile->Append(ID_SaveDetails, "&Save Details...\tCtrl-S", "Save the detailed NAL information to a file");
+    menuFile->Append(ID_SetFfmpeg, "Set &FFmpeg Path...", "Set the path to the ffmpeg executable");
     menuFile->AppendSeparator();
     menuFile->Append(wxID_EXIT);
 
@@ -113,9 +123,11 @@ H264AnalyzerFrame::H264AnalyzerFrame(const wxString& title)
 
     wxButton* openBtn = new wxButton(buttonPanel, ID_OpenFile, "Open File");
     wxButton* saveBtn = new wxButton(buttonPanel, ID_SaveDetails, "Save Details");
+    wxButton* ffmpegBtn = new wxButton(buttonPanel, ID_SetFfmpeg, "Set FFmpeg");
 
     buttonSizer->Add(openBtn, 0, wxALL, 5);
     buttonSizer->Add(saveBtn, 0, wxALL, 5);
+    buttonSizer->Add(ffmpegBtn, 0, wxALL, 5);
     buttonPanel->SetSizer(buttonSizer);
 
     CreateStatusBar();
@@ -126,7 +138,7 @@ H264AnalyzerFrame::H264AnalyzerFrame(const wxString& title)
     m_nalList = new wxListCtrl(splitter, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxLC_REPORT | wxLC_SINGLE_SEL);
     m_nalList->InsertColumn(0, "Offset", wxLIST_FORMAT_LEFT, 100);
     m_nalList->InsertColumn(1, "Size", wxLIST_FORMAT_LEFT, 80);
-    m_nalList->InsertColumn(2, "Type", wxLIST_FORMAT_LEFT, 120);
+    m_nalList->InsertColumn(2, "Type", wxLIST_FORMAT_LEFT, 150);
     m_nalList->InsertColumn(3, "RefIdc", wxLIST_FORMAT_LEFT, 60);
     m_nalList->InsertColumn(4, "FZC", wxLIST_FORMAT_LEFT, 40);
 
@@ -155,13 +167,24 @@ void H264AnalyzerFrame::OnAbout(wxCommandEvent& event) {
 
 void H264AnalyzerFrame::OnOpenFile(wxCommandEvent& event) {
     wxFileDialog openFileDialog(this, _("Open H.264 bitstream"), "", "",
-                               "H.264 files (*.264;*.h264;*.bin)|*.264;*.h264;*.bin|All files (*.*)|*.*", 
+                               "Video files (*.264;*.h264;*.bin;*.mp4;*.mkv;*.mov)|*.264;*.h264;*.bin;*.mp4;*.mkv;*.mov|All files (*.*)|*.*", 
                                wxFD_OPEN | wxFD_FILE_MUST_EXIST);
 
     if (openFileDialog.ShowModal() == wxID_CANCEL)
         return;
 
     AnalyzeFile(openFileDialog.GetPath());
+}
+
+void H264AnalyzerFrame::OnSetFfmpegPath(wxCommandEvent& event) {
+    wxFileDialog openFileDialog(this, _("Select FFmpeg executable"), "", "",
+                               "FFmpeg executable|ffmpeg;ffmpeg.exe|All files (*.*)|*.*", 
+                               wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+
+    if (openFileDialog.ShowModal() == wxID_OK) {
+        m_ffmpegPath = openFileDialog.GetPath();
+        SetStatusText(wxString::Format("FFmpeg path set to: %s", m_ffmpegPath));
+    }
 }
 
 void H264AnalyzerFrame::OnSaveDetails(wxCommandEvent& event) {
@@ -236,6 +259,45 @@ std::string H264AnalyzerFrame::GetNalTypeName(int type) {
 }
 
 void H264AnalyzerFrame::AnalyzeFile(const wxString& filename) {
+    if (filename.IsEmpty() || !wxFileExists(filename))
+        return;
+
+    wxString input_fileName = filename;
+    wxString tmp264File = "";
+
+    if (!filename.Lower().EndsWith(".264") && !filename.Lower().EndsWith(".h264") && !filename.Lower().EndsWith(".bin"))
+    {
+        tmp264File = filename + "_output.264";
+        wxString cmd = wxString::Format("\"%s\" -i \"%s\" -an -vcodec copy \"%s\" -y", m_ffmpegPath, filename, tmp264File);
+        
+        wxProgressDialog progressDialog("Loading...", "FFmpeg is converting file to H.264 stream", 100, this, wxPD_APP_MODAL | wxPD_AUTO_HIDE);
+        
+        long result = wxExecute(cmd, wxEXEC_SYNC);
+        if (result != 0)
+        {
+            wxMessageBox("FFmpeg convert failed. Please ensure FFmpeg path is correct.", "Error", wxOK | wxICON_ERROR);
+            if (wxFileExists(tmp264File)) wxRemoveFile(tmp264File);
+            return;
+        }
+        
+        if (!wxFileExists(tmp264File) || wxFileName::GetSize(tmp264File) == 0)
+        {
+            wxMessageBox("File convert to h264 nal stream failed", "Error", wxOK | wxICON_ERROR);
+            if (wxFileExists(tmp264File)) wxRemoveFile(tmp264File);
+            return;
+        }
+        input_fileName = tmp264File;
+    }
+
+    DoAnalyzeFile(input_fileName);
+
+    if (!tmp264File.IsEmpty() && wxFileExists(tmp264File))
+    {
+        wxRemoveFile(tmp264File);
+    }
+}
+
+void H264AnalyzerFrame::DoAnalyzeFile(const wxString& filename) {
     m_nalList->DeleteAllItems();
     m_nals.clear();
 
@@ -247,14 +309,36 @@ void H264AnalyzerFrame::AnalyzeFile(const wxString& filename) {
         
         int fzc = -1;
         int ref_idc = -1;
+        // std::string frame_type = "-"; // Removed in favor of restoring RefIdc column
 
         if (size > 0) {
             uint8_t header = data[0];
             fzc = (header >> 7) & 0x01;
             ref_idc = (header >> 5) & 0x03;
             nal.type = header & 0x1F;
-            nal.type_name = self->GetNalTypeName(nal.type);
             nal.data.assign(data, data + size);
+
+            if (nal.type == NAL_UNIT_TYPE_CODED_SLICE_IDR) {
+                // frame_type = "I";
+                nal.type_name = "IDR picture (I)";
+            } else if (nal.type == NAL_UNIT_TYPE_CODED_SLICE_NON_IDR) {
+                // Peek into slice header to find slice_type
+                h264_stream_t* h = h264_new();
+                if (read_nal_unit(h, data, size) >= 0 && h->sh) {
+                    int st = h->sh->slice_type;
+                    if (st >= 5) st -= 5;
+                    if (st == SH_SLICE_TYPE_I) { nal.type_name = "non-IDR (I)"; }
+                    else if (st == SH_SLICE_TYPE_P) { nal.type_name = "non-IDR (P)"; }
+                    else if (st == SH_SLICE_TYPE_B) { nal.type_name = "non-IDR (B)"; }
+                    else if (st == SH_SLICE_TYPE_SI) { nal.type_name = "non-IDR (SI)"; }
+                    else if (st == SH_SLICE_TYPE_SP) { nal.type_name = "non-IDR (SP)"; }
+                } else {
+                    nal.type_name = self->GetNalTypeName(nal.type);
+                }
+                h264_free(h);
+            } else {
+                nal.type_name = self->GetNalTypeName(nal.type);
+            }
         }
 
         self->m_nals.push_back(nal);
